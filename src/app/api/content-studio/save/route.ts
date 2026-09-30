@@ -67,8 +67,9 @@ export async function POST(request: Request) {
         type: values.contentType,
         status: ContentStatus.DRAFT,
         platforms: [values.platform],
-        prompt: values.extraInstructions || null,
-        brief: values.marketingGoal,
+        prompt:
+          values.taskContext?.turnPrompt || values.extraInstructions || null,
+        brief: values.taskContext?.rootPrompt || values.marketingGoal,
         body: `${variant.hook}\n\n${variant.body}`,
         hashtags: variant.hashtags,
         callToAction: variant.cta,
@@ -83,6 +84,17 @@ export async function POST(request: Request) {
           contentTypeLabel: contentTypeLabels[values.contentType],
           outputLanguage: values.outputLanguage,
           source: "content-studio",
+          ...(values.taskContext
+            ? {
+                task: {
+                  id: values.taskContext.taskId,
+                  rootPrompt: values.taskContext.rootPrompt,
+                  turnPrompt: values.taskContext.turnPrompt,
+                  turnIndex: values.taskContext.turnIndex,
+                  modificationHistory: values.taskContext.modificationHistory,
+                },
+              }
+            : {}),
         },
         riskNotes: variant.complianceCheck ?? Prisma.JsonNull,
         assets:

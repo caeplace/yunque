@@ -108,7 +108,7 @@ export async function POST(request: Request) {
     });
 
     if (isFormRequest) {
-      return redirectToPath("/brand-profile");
+      return redirectToPath("/workspaces/onboarding");
     }
 
     return apiSuccess(

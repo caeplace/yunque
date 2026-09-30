@@ -12,6 +12,7 @@ export const dynamic = "force-dynamic";
 type ContentStudioPageProps = {
   searchParams?: Promise<{
     assetIds?: string;
+    batchId?: string;
     brief?: string;
   }>;
 };
@@ -88,8 +89,12 @@ export default async function ContentStudioPage({
 }: ContentStudioPageProps) {
   const params = await searchParams;
   const initialSelectedAssetIds = parseAssetIds(params?.assetIds);
+  const initialBatchId = params?.batchId?.trim() || null;
   const initialCreativeBrief = parseInitialBrief(params?.brief);
-  const result = await getContentStudioData(initialSelectedAssetIds);
+  const result = await getContentStudioData(
+    initialSelectedAssetIds,
+    initialBatchId,
+  );
   const data = result.data;
 
   if (!data) {
@@ -127,6 +132,17 @@ export default async function ContentStudioPage({
           productName: asset.productName,
           scene: asset.scene,
         }))}
+        brandMemories={data.memories.map((memory) => ({
+          id: memory.id,
+          type: memory.type,
+          title: memory.title,
+          content: memory.content,
+          source: memory.source,
+          importance: memory.importance,
+          priority: memory.priority,
+          createdAt: memory.createdAt.toISOString(),
+          updatedAt: memory.updatedAt.toISOString(),
+        }))}
         recentContents={data.recentContents.map((content) => ({
           id: content.id,
           title: content.title,
@@ -144,7 +160,7 @@ export default async function ContentStudioPage({
             fileName: asset.fileName,
           })),
         }))}
-        initialSelectedAssetIds={initialSelectedAssetIds}
+        initialSelectedAssetIds={data.selectedAssetIds}
         initialCreativeBrief={initialCreativeBrief}
       />
     </div>

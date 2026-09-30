@@ -284,13 +284,33 @@ export async function getAssetsData(status?: AssetStatus | null) {
   });
 }
 
-export async function getContentStudioData(preselectedAssetIds: string[] = []) {
+export async function getContentStudioData(
+  preselectedAssetIds: string[] = [],
+  preselectedBatchId?: string | null,
+) {
   return safeDb(async () => {
     const current = await getCurrentUserWorkspace();
     if (!current) return null;
 
     const workspaceId = current.workspace.id;
-    const selectedAssetIds = preselectedAssetIds.filter(Boolean).slice(0, 12);
+    const batchAssetIds = preselectedBatchId
+      ? await prisma.asset.findMany({
+          where: {
+            workspaceId,
+            batchId: preselectedBatchId,
+            status: { not: AssetStatus.ARCHIVED },
+          },
+          orderBy: { createdAt: "desc" },
+          take: 12,
+          select: { id: true },
+        })
+      : [];
+    const selectedAssetIds = [
+      ...new Set([
+        ...preselectedAssetIds.filter(Boolean),
+        ...batchAssetIds.map((asset) => asset.id),
+      ]),
+    ].slice(0, 12);
     const [assets, recentContents, memories] = await Promise.all([
       prisma.asset.findMany({
         where:
@@ -337,6 +357,7 @@ export async function getContentStudioData(preselectedAssetIds: string[] = []) {
       memories,
       assets,
       recentContents,
+      selectedAssetIds,
     };
   });
 }

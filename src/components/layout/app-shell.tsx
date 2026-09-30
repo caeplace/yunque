@@ -203,9 +203,12 @@ export function AppShell({
   const copy = getI18nCopy(language);
   const [open, setOpen] = useState(false);
   const [isSwitching, setIsSwitching] = useState(false);
-  const current =
-    allNavItems.find((item) => item.href === pathname) ?? allNavItems[0];
-  const currentLabel = copy.nav[current.labelKey];
+  const current = allNavItems.find((item) => item.href === pathname);
+  const currentLabel = current
+    ? copy.nav[current.labelKey]
+    : pathname.startsWith("/workspaces")
+      ? copy.newWorkspace
+      : copy.nav.dashboard;
   const currentWorkspace =
     workspaces.find((workspace) => workspace.id === currentWorkspaceId) ??
     workspaces[0] ??

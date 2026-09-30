@@ -8,7 +8,12 @@ import {
   useState,
 } from "react";
 import { useRouter } from "next/navigation";
-import type { ContentStatus, ContentType, Platform } from "@prisma/client";
+import type {
+  ContentStatus,
+  ContentType,
+  MemoryType,
+  Platform,
+} from "@prisma/client";
 import {
   AlertTriangle,
   CalendarDays,
@@ -16,6 +21,7 @@ import {
   CheckCircle2,
   ChevronDown,
   Copy,
+  Download,
   Eye,
   FilePlus2,
   FileText,
@@ -55,6 +61,7 @@ import {
   contentStatusLabels,
   contentTypeLabels,
   formatDateTime,
+  memoryTypeLabels,
   platformLabels,
 } from "@/lib/labels";
 import type { ComplianceCheckResult } from "@/lib/prompts/compliance-check";
@@ -94,6 +101,18 @@ type RecentContentItem = {
   }>;
 };
 
+type BrandMemoryOption = {
+  id: string;
+  type: MemoryType;
+  title: string;
+  content: string;
+  source: string | null;
+  importance: number;
+  priority: number;
+  createdAt: string;
+  updatedAt: string;
+};
+
 type NoticeState = {
   type: "success" | "error" | "info";
   message: string;
@@ -104,6 +123,7 @@ type ContentGeneratorProps = {
   brandName: string | null;
   brandTone: string | null;
   assets: AssetOption[];
+  brandMemories: BrandMemoryOption[];
   recentContents: RecentContentItem[];
   initialSelectedAssetIds?: string[];
   initialCreativeBrief?: string;
@@ -113,13 +133,24 @@ type PlatformChoice = Platform | "AUTO";
 
 type GenerationTurn = {
   id: string;
+  taskId: string;
+  taskRootPrompt: string;
+  turnIndex: number;
   prompt: string;
   assetIds: string[];
   generationForm: ContentGenerationFormValues;
   platformChoice: PlatformChoice;
   variants: GeneratedContentVariantValues[];
   status: "loading" | "done" | "error";
+  createdAt: string;
   message?: string;
+};
+
+type ContentTaskState = {
+  id: string;
+  title: string;
+  rootPrompt: string;
+  createdAt: string;
 };
 
 type EditingVariantState = {
@@ -181,6 +212,30 @@ const defaultForm: ContentGenerationFormValues = {
   extraInstructions: "",
 };
 
+const quickModificationActions = [
+  {
+    label: "改短一点",
+    instruction: "把上一版改短一点，保留核心卖点、自然 CTA 和可直接发布的语气。",
+  },
+  {
+    label: "更适合小红书",
+    instruction:
+      "把上一版改成更适合小红书的种草表达：真实分享感更强，标题更有收藏价值，标签更贴近小红书。",
+    platform: "XIAOHONGSHU" as Platform,
+  },
+  {
+    label: "更像真实分享",
+    instruction:
+      "把上一版改得更像真实用户分享，减少广告感，增加具体场景、体验细节和可信表达。",
+  },
+  {
+    label: "生成英文版本",
+    instruction:
+      "基于上一版生成英文版本，并附中文对照；英文要自然，适合海外社媒发布。",
+    outputLanguage: "EN_WITH_ZH" as ContentOutputLanguage,
+  },
+];
+
 function createLocalId() {
   return globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`;
 }
@@ -223,8 +278,8 @@ function validateGenerationForm(
     return { ok: false, message: "请先描述你想生成什么内容。" };
   }
 
-  if (marketingGoal.length > 800) {
-    return { ok: false, message: "创作需求最多 800 个字。" };
+  if (marketingGoal.length > 1200) {
+    return { ok: false, message: "创作需求最多 1200 个字。" };
   }
 
   if (
@@ -329,6 +384,104 @@ function formatVariantText(variant: GeneratedContentVariantValues) {
   return `${variant.title}\n\n${variant.hook}\n\n${variant.body}\n\n${variant.cta}${tags}`;
 }
 
+function normalizePublishTag(tag: string) {
+  const trimmed = tag.trim();
+
+  if (!trimmed) return null;
+
+  return trimmed.startsWith("#") ? trimmed : `#${trimmed}`;
+}
+
+function getPublishTags(variant: GeneratedContentVariantValues) {
+  return variant.hashtags
+    .map(normalizePublishTag)
+    .filter((tag): tag is string => Boolean(tag))
+    .join(" ");
+}
+
+function getPublishBody(variant: GeneratedContentVariantValues) {
+  return [variant.hook, variant.body].filter(Boolean).join("\n\n");
+}
+
+function formatPublishText(variant: GeneratedContentVariantValues) {
+  const tags = getPublishTags(variant);
+
+  return [
+    `标题：\n${variant.title}`,
+    `正文：\n${getPublishBody(variant)}`,
+    `标签：\n${tags || "无"}`,
+    `CTA：\n${variant.cta}`,
+  ].join("\n\n");
+}
+
+function formatPublishMarkdown(variant: GeneratedContentVariantValues) {
+  const tags = getPublishTags(variant);
+
+  return [
+    `# ${variant.title}`,
+    `## 正文\n\n${getPublishBody(variant)}`,
+    `## 标签\n\n${tags || "无"}`,
+    `## CTA\n\n${variant.cta}`,
+  ].join("\n\n");
+}
+
+function sanitizeExportFileName(value: string) {
+  return (
+    value
+      .replace(/[<>:"/\\|?*\u0000-\u001F]/g, "")
+      .replace(/\s+/g, "-")
+      .slice(0, 60) || "generated-content"
+  );
+}
+
+function downloadTextFile(fileName: string, content: string, mimeType: string) {
+  const blob = new Blob([content], { type: `${mimeType};charset=utf-8` });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+
+  link.href = url;
+  link.download = fileName;
+  document.body.append(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
+function normalizeCreatedMemory(value: unknown): BrandMemoryOption | null {
+  if (!value || typeof value !== "object") return null;
+
+  const record = value as Record<string, unknown>;
+
+  if (
+    typeof record.id !== "string" ||
+    typeof record.title !== "string" ||
+    typeof record.content !== "string" ||
+    typeof record.type !== "string" ||
+    !(record.type in memoryTypeLabels)
+  ) {
+    return null;
+  }
+
+  return {
+    id: record.id,
+    type: record.type as MemoryType,
+    title: record.title,
+    content: record.content,
+    source: typeof record.source === "string" ? record.source : null,
+    importance:
+      typeof record.importance === "number" ? record.importance : 7,
+    priority: typeof record.priority === "number" ? record.priority : 7,
+    createdAt:
+      typeof record.createdAt === "string"
+        ? record.createdAt
+        : new Date().toISOString(),
+    updatedAt:
+      typeof record.updatedAt === "string"
+        ? record.updatedAt
+        : new Date().toISOString(),
+  };
+}
+
 function getAssetHint(asset: AssetOption) {
   if (asset.productName || asset.scene) {
     return [asset.productName, asset.scene].filter(Boolean).join(" · ");
@@ -341,6 +494,40 @@ function getAssetHint(asset: AssetOption) {
 
 function getVariantKey(turnId: string, index: number) {
   return `${turnId}:${index}`;
+}
+
+function getTaskTitle(prompt: string) {
+  const normalized = prompt.replace(/\s+/g, " ").trim();
+
+  if (!normalized) return "新的内容任务";
+
+  return normalized.length > 34 ? `${normalized.slice(0, 34)}...` : normalized;
+}
+
+function buildContinuationPrompt(
+  rootPrompt: string,
+  previousDraft: string,
+  instruction: string,
+) {
+  return [
+    `当前内容任务：${rootPrompt.replace(/\s+/g, " ").slice(0, 360)}`,
+    `上一版内容摘要：\n${previousDraft.slice(0, 520)}`,
+    `继续修改要求：${instruction}`,
+  ]
+    .join("\n\n")
+    .slice(0, 1200);
+}
+
+function extractPreferenceFromPrompt(prompt: string) {
+  const marker = "继续修改要求：";
+  const markerIndex = prompt.lastIndexOf(marker);
+
+  if (markerIndex >= 0) {
+    const preference = prompt.slice(markerIndex + marker.length).trim();
+    if (preference) return preference;
+  }
+
+  return prompt.trim();
 }
 
 function normalizeUploadedAsset(value: unknown): AssetOption | null {
@@ -373,6 +560,7 @@ export function ContentGenerator({
   brandName,
   brandTone,
   assets,
+  brandMemories,
   recentContents,
   initialSelectedAssetIds = [],
   initialCreativeBrief = "",
@@ -387,6 +575,14 @@ export function ContentGenerator({
   const [assetDialogOpen, setAssetDialogOpen] = useState(false);
   const [assetSearch, setAssetSearch] = useState("");
   const [uploadedAssets, setUploadedAssets] = useState<AssetOption[]>([]);
+  const [memoryItems, setMemoryItems] =
+    useState<BrandMemoryOption[]>(brandMemories);
+  const [selectedMemory, setSelectedMemory] =
+    useState<BrandMemoryOption | null>(null);
+  const [memoryDialogOpen, setMemoryDialogOpen] = useState(false);
+  const [memoryDraft, setMemoryDraft] = useState("");
+  const [memoryTitle, setMemoryTitle] = useState("");
+  const [isSavingMemory, setIsSavingMemory] = useState(false);
   const [form, setForm] = useState<ContentGenerationFormValues>(() => {
     const availableAssetIds = new Set(assets.map((asset) => asset.id));
     const selectedAssets = initialSelectedAssetIds
@@ -398,6 +594,7 @@ export function ContentGenerator({
       selectedAssets,
     };
   });
+  const [task, setTask] = useState<ContentTaskState | null>(null);
   const [turns, setTurns] = useState<GenerationTurn[]>([]);
   const [notice, setNotice] = useState<NoticeState>(null);
   const [isGenerating, setIsGenerating] = useState(false);
@@ -472,6 +669,29 @@ export function ContentGenerator({
     });
   }, [assetSearch, availableAssets]);
 
+  const referencedMemories = useMemo(
+    () =>
+      [...memoryItems]
+        .sort((a, b) => {
+          if (b.importance !== a.importance) return b.importance - a.importance;
+          if (b.priority !== a.priority) return b.priority - a.priority;
+          return (
+            new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
+          );
+        })
+        .slice(0, 5),
+    [memoryItems],
+  );
+
+  const latestDoneTurn = useMemo(
+    () =>
+      [...turns]
+        .reverse()
+        .find((turn) => turn.status === "done" && turn.variants.length > 0) ??
+      null,
+    [turns],
+  );
+
   function notify(
     type: "success" | "error" | "info",
     title: string,
@@ -512,6 +732,107 @@ export function ContentGenerator({
     });
   }
 
+  function buildTaskContext(turn: GenerationTurn) {
+    const history = turns
+      .filter((item) => item.taskId === turn.taskId)
+      .map((item) => ({
+        prompt: item.prompt.slice(0, 1200),
+        createdAt: item.createdAt,
+      }));
+
+    if (!history.some((item) => item.createdAt === turn.createdAt)) {
+      history.push({
+        prompt: turn.prompt.slice(0, 1200),
+        createdAt: turn.createdAt,
+      });
+    }
+
+    return {
+      taskId: turn.taskId,
+      rootPrompt: turn.taskRootPrompt.slice(0, 1200),
+      turnPrompt: turn.prompt.slice(0, 1200),
+      turnIndex: turn.turnIndex,
+      modificationHistory: history.slice(-20),
+    };
+  }
+
+  function resetContentTask() {
+    if (isGenerating) return;
+
+    setTask(null);
+    setTurns([]);
+    setComposerText("");
+    setSavedKeys([]);
+    setSavedContentIds({});
+    setNotice(null);
+    window.setTimeout(() => composerRef.current?.focus(), 0);
+  }
+
+  function openMemoryPreferenceDialog(initialContent?: string) {
+    const latestModificationTurn =
+      [...turns].reverse().find((turn) => turn.turnIndex > 1) ?? null;
+    const sourceContent =
+      initialContent?.trim() ||
+      composerText.trim() ||
+      latestModificationTurn?.prompt.trim() ||
+      "";
+
+    setMemoryTitle("内容修改偏好");
+    setMemoryDraft(extractPreferenceFromPrompt(sourceContent));
+    setMemoryDialogOpen(true);
+  }
+
+  async function handleSaveMemoryPreference() {
+    const content = memoryDraft.trim();
+
+    if (content.length < 2) {
+      notify("error", "还缺一点信息", "请先填写要保存的偏好。");
+      return;
+    }
+
+    setIsSavingMemory(true);
+
+    try {
+      const response = await fetch("/api/brand-memories", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          memoryType: "PREFERENCE",
+          title: memoryTitle.trim(),
+          content,
+          source: "Content Studio 修改偏好",
+          importance: 7,
+        }),
+      });
+      const payload = await parseApiPayload(response);
+
+      if (!response.ok) {
+        notify(
+          "error",
+          "保存失败",
+          getApiErrorMessage(payload, "品牌记忆保存失败，请稍后再试。"),
+        );
+        return;
+      }
+
+      const memory = normalizeCreatedMemory(payload.memory);
+
+      if (memory) {
+        setMemoryItems((current) => [memory, ...current]);
+      }
+
+      setMemoryDialogOpen(false);
+      setMemoryDraft("");
+      setMemoryTitle("");
+      notify("success", "已保存为品牌记忆", "后续内容生成会参考这条偏好。");
+      router.refresh();
+    } catch {
+      notify("error", "保存失败", "网络暂时不可用，品牌记忆保存失败。");
+    } finally {
+      setIsSavingMemory(false);
+    }
+  }
+
   function addUploadedAssetsToContext(nextAssets: AssetOption[]) {
     if (nextAssets.length === 0) return;
 
@@ -533,9 +854,21 @@ export function ContentGenerator({
     }));
   }
 
-  function buildGenerationValues(promptText: string) {
+  function buildGenerationValues(
+    promptText: string,
+    options: {
+      formOverride?: Partial<ContentGenerationFormValues>;
+      platformChoiceOverride?: PlatformChoice;
+    } = {},
+  ) {
+    const nextForm = {
+      ...form,
+      ...options.formOverride,
+    };
+    const nextPlatformChoice =
+      options.platformChoiceOverride ?? platformChoice;
     const userBrief = promptText.trim();
-    const advancedGoal = form.marketingGoal.trim();
+    const advancedGoal = nextForm.marketingGoal.trim();
     const marketingGoal = [
       userBrief,
       advancedGoal ? `补充营销目标：${advancedGoal}` : "",
@@ -543,23 +876,23 @@ export function ContentGenerator({
       .filter(Boolean)
       .join("\n\n");
     const inferredPlatform =
-      platformChoice === "AUTO"
-        ? inferPlatformFromBrief(userBrief) ?? form.platform
-        : platformChoice;
+      nextPlatformChoice === "AUTO"
+        ? inferPlatformFromBrief(userBrief) ?? nextForm.platform
+        : nextPlatformChoice;
     const helperNotes = [
-      platformChoice === "AUTO"
+      nextPlatformChoice === "AUTO"
         ? "用户没有手动固定平台。请根据需求和品牌资料判断最适合的平台；如果需求没有明确平台，请生成适合多平台复用的通用社媒版本，并在 platformNotes 中说明推荐平台。"
         : "",
-      form.selectedAssets.length === 0
+      nextForm.selectedAssets.length === 0
         ? "用户没有选择素材。请基于品牌档案和品牌记忆生成，并让素材建议保持通用、可执行。"
         : "",
     ].filter(Boolean);
-    const extraInstructions = [form.extraInstructions.trim(), ...helperNotes]
+    const extraInstructions = [nextForm.extraInstructions.trim(), ...helperNotes]
       .filter(Boolean)
       .join("\n\n");
 
     return validateGenerationForm({
-      ...form,
+      ...nextForm,
       platform: inferredPlatform,
       marketingGoal,
       extraInstructions,
@@ -635,33 +968,56 @@ export function ContentGenerator({
     void uploadFiles(files);
   }
 
-  async function handleGenerate(event?: FormEvent<HTMLFormElement>) {
-    event?.preventDefault();
+  async function submitGeneration(
+    promptText: string,
+    options: {
+      formOverride?: Partial<ContentGenerationFormValues>;
+      platformChoiceOverride?: PlatformChoice;
+    } = {},
+  ) {
     if (isGenerating) return;
 
-    const promptText =
-      composerText.trim() ||
-      (form.selectedAssets.length > 0
-        ? "请基于已选素材生成一条适合社媒发布的内容。"
-        : "");
-    const parsed = buildGenerationValues(promptText);
+    const normalizedPrompt = promptText.trim();
+    const parsed = buildGenerationValues(normalizedPrompt, options);
 
     if (!parsed.ok) {
       notify("error", "还缺一点信息", parsed.message);
       return;
     }
 
+    const startedAt = new Date().toISOString();
+    const activeTask =
+      task ??
+      ({
+        id: createLocalId(),
+        title: getTaskTitle(normalizedPrompt),
+        rootPrompt: normalizedPrompt,
+        createdAt: startedAt,
+      } satisfies ContentTaskState);
+    const turnIndex =
+      turns.filter((turnItem) => turnItem.taskId === activeTask.id).length + 1;
+    const selectedAssetIds = [...parsed.data.selectedAssets];
+    const nextPlatformChoice =
+      options.platformChoiceOverride ?? platformChoice;
     const turn: GenerationTurn = {
       id: createLocalId(),
-      prompt: promptText,
-      assetIds: [...form.selectedAssets],
+      taskId: activeTask.id,
+      taskRootPrompt: activeTask.rootPrompt,
+      turnIndex,
+      prompt: normalizedPrompt,
+      assetIds: selectedAssetIds,
       generationForm: parsed.data,
-      platformChoice,
+      platformChoice: nextPlatformChoice,
       variants: [],
       status: "loading",
+      createdAt: startedAt,
     };
 
-    if (form.selectedAssets.length === 0) {
+    if (!task) {
+      setTask(activeTask);
+    }
+
+    if (selectedAssetIds.length === 0) {
       setNotice({
         type: "info",
         message: "当前没有选择素材；可以直接生成，添加素材后内容会更贴合具体产品。",
@@ -747,6 +1103,57 @@ export function ContentGenerator({
     }
   }
 
+  async function handleGenerate(event?: FormEvent<HTMLFormElement>) {
+    event?.preventDefault();
+
+    const promptText =
+      composerText.trim() ||
+      (form.selectedAssets.length > 0
+        ? "请基于已选素材生成一条适合社媒发布的内容。"
+        : "");
+
+    await submitGeneration(promptText);
+  }
+
+  async function handleQuickModification(
+    action: (typeof quickModificationActions)[number],
+  ) {
+    if (isGenerating) return;
+
+    const sourceTurn = latestDoneTurn;
+    const sourceVariant = sourceTurn?.variants[0];
+
+    if (!sourceTurn || !sourceVariant) {
+      notify("info", "先生成一版内容", "有了第一版后，就可以继续让云雀修改。");
+      return;
+    }
+
+    const promptText = buildContinuationPrompt(
+      task?.rootPrompt ?? sourceTurn.taskRootPrompt,
+      formatVariantText(sourceVariant),
+      action.instruction,
+    );
+    const formOverride: Partial<ContentGenerationFormValues> = {};
+    let platformChoiceOverride: PlatformChoice | undefined;
+
+    if (action.platform) {
+      formOverride.platform = action.platform;
+      platformChoiceOverride = action.platform;
+      setPlatformChoice(action.platform);
+      updateForm("platform", action.platform);
+    }
+
+    if (action.outputLanguage) {
+      formOverride.outputLanguage = action.outputLanguage;
+      updateForm("outputLanguage", action.outputLanguage);
+    }
+
+    await submitGeneration(promptText, {
+      formOverride,
+      platformChoiceOverride,
+    });
+  }
+
   async function handleSave(
     variant: GeneratedContentVariantValues,
     index: number,
@@ -763,6 +1170,7 @@ export function ContentGenerator({
         body: JSON.stringify({
           ...turn.generationForm,
           variant,
+          taskContext: buildTaskContext(turn),
         }),
       });
       const payload = await parseApiPayload(response);
@@ -814,6 +1222,37 @@ export function ContentGenerator({
     } catch {
       notify("error", "复制失败", "请手动选中内容复制。");
     }
+  }
+
+  async function handleCopyPublishVariant(
+    variant: GeneratedContentVariantValues,
+  ) {
+    try {
+      await navigator.clipboard.writeText(formatPublishText(variant));
+      notify("success", "复制成功", "已复制可直接发布的格式。");
+    } catch {
+      notify("error", "复制失败", "请手动选中内容复制。");
+    }
+  }
+
+  function handleExportVariant(
+    variant: GeneratedContentVariantValues,
+    format: "markdown" | "txt",
+  ) {
+    const baseName = sanitizeExportFileName(variant.title);
+
+    if (format === "markdown") {
+      downloadTextFile(
+        `${baseName}.md`,
+        formatPublishMarkdown(variant),
+        "text/markdown",
+      );
+      notify("success", "导出完成", "Markdown 文件已下载。");
+      return;
+    }
+
+    downloadTextFile(`${baseName}.txt`, formatPublishText(variant), "text/plain");
+    notify("success", "导出完成", "TXT 文件已下载。");
   }
 
   function openEdit(content: RecentContentItem) {
@@ -900,12 +1339,17 @@ export function ContentGenerator({
     });
   }
 
-  function continueFromVariant(variant: GeneratedContentVariantValues) {
-    const previousDraft = formatVariantText(variant).slice(0, 560);
-
-    setComposerText(
-      `请基于下面这版继续修改：\n\n${previousDraft}\n\n修改要求：`,
+  function continueFromVariant(
+    variant: GeneratedContentVariantValues,
+    turn: GenerationTurn,
+  ) {
+    const promptText = buildContinuationPrompt(
+      turn.taskRootPrompt,
+      formatVariantText(variant),
+      "",
     );
+
+    setComposerText(promptText);
     window.setTimeout(() => composerRef.current?.focus(), 0);
   }
 
@@ -1072,6 +1516,20 @@ export function ContentGenerator({
               </Badge>
             </div>
             <h3 className="text-base font-semibold leading-6">{variant.title}</h3>
+            <div className="mt-2 flex flex-wrap gap-1.5">
+              <Badge variant="outline" className="gap-1">
+                <CheckCircle2 className="size-3" />
+                已参考品牌档案
+              </Badge>
+              <Badge variant="outline" className="gap-1">
+                <CheckCircle2 className="size-3" />
+                已参考素材 {turn.assetIds.length}
+              </Badge>
+              <Badge variant="outline" className="gap-1">
+                <CheckCircle2 className="size-3" />
+                已参考品牌记忆 {referencedMemories.length}
+              </Badge>
+            </div>
           </div>
           <div className="flex flex-wrap gap-1.5">
             <Button
@@ -1082,6 +1540,33 @@ export function ContentGenerator({
             >
               <Copy className="size-4" />
               复制
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => handleCopyPublishVariant(variant)}
+            >
+              <Copy className="size-4" />
+              发布格式复制
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => handleExportVariant(variant, "markdown")}
+            >
+              <Download className="size-4" />
+              导出 MD
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => handleExportVariant(variant, "txt")}
+            >
+              <Download className="size-4" />
+              导出 TXT
             </Button>
             <Button
               type="button"
@@ -1118,7 +1603,7 @@ export function ContentGenerator({
               type="button"
               variant="outline"
               size="sm"
-              onClick={() => continueFromVariant(variant)}
+              onClick={() => continueFromVariant(variant, turn)}
             >
               <MessageSquareText className="size-4" />
               继续修改
@@ -1198,7 +1683,79 @@ export function ContentGenerator({
           <div className="flex flex-wrap gap-2">
             <Badge variant="secondary">工作区：{workspaceName}</Badge>
             <Badge variant="outline">已选素材 {selectedAssetDetails.length}</Badge>
+            {task ? (
+              <Badge variant="outline">任务已进行 {turns.length} 轮</Badge>
+            ) : null}
           </div>
+        </div>
+        {task ? (
+          <div className="mt-3 flex flex-col gap-3 rounded-md border bg-muted/25 p-3 sm:flex-row sm:items-center sm:justify-between">
+            <div className="min-w-0">
+              <p className="text-xs font-medium text-muted-foreground">
+                当前内容任务
+              </p>
+              <p className="mt-1 truncate text-sm font-medium">{task.title}</p>
+              <p className="mt-1 text-xs text-muted-foreground">
+                创建于 {formatDateTime(new Date(task.createdAt))}
+              </p>
+            </div>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={resetContentTask}
+              disabled={isGenerating}
+            >
+              新任务
+            </Button>
+          </div>
+        ) : null}
+        <div className="mt-3 rounded-md border bg-background/70 p-3">
+          <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <p className="text-sm font-medium">本次参考的品牌记忆</p>
+              <p className="text-xs text-muted-foreground">
+                默认取高重要度的长期偏好、规则和平台经验，生成时作为上下文参考。
+              </p>
+            </div>
+            <Badge variant="secondary">{referencedMemories.length} 条</Badge>
+          </div>
+          {referencedMemories.length > 0 ? (
+            <div className="mt-3 grid gap-2 md:grid-cols-2">
+              {referencedMemories.map((memory) => (
+                <button
+                  key={memory.id}
+                  type="button"
+                  className="rounded-md border bg-card p-3 text-left transition-colors hover:bg-muted/40"
+                  onClick={() => setSelectedMemory(memory)}
+                >
+                  <div className="flex items-start justify-between gap-2">
+                    <p className="min-w-0 truncate text-sm font-medium">
+                      {memory.title}
+                    </p>
+                    <Badge variant="outline" className="shrink-0">
+                      重要度 {memory.importance}
+                    </Badge>
+                  </div>
+                  <div className="mt-2 flex flex-wrap gap-1.5">
+                    <Badge variant="secondary">
+                      {memoryTypeLabels[memory.type]}
+                    </Badge>
+                    {memory.source ? (
+                      <Badge variant="outline">{memory.source}</Badge>
+                    ) : null}
+                  </div>
+                  <p className="mt-2 line-clamp-2 text-xs leading-5 text-muted-foreground">
+                    {memory.content}
+                  </p>
+                </button>
+              ))}
+            </div>
+          ) : (
+            <div className="mt-3 rounded-md border border-dashed bg-muted/25 p-4 text-sm text-muted-foreground">
+              还没有可参考的品牌记忆。你可以在下方把修改偏好保存为长期记忆。
+            </div>
+          )}
         </div>
       </div>
 
@@ -1226,8 +1783,8 @@ export function ContentGenerator({
                 <Sparkles className="mx-auto mb-4 size-10 text-primary" />
                 <h2 className="text-xl font-semibold">把素材和需求交给云雀</h2>
                 <p className="mt-3 text-sm leading-6 text-muted-foreground">
-                  拖入产品图、选择素材库里的资料，然后像和同事沟通一样描述你要的内容。
-                  平台、内容类型和语气都可以让 AI 先判断。
+                  输入一句需求后会形成一个内容任务。后续可以继续要求改短、
+                  更适合小红书、更像真实分享，直到保存成可排期内容。
                 </p>
               </div>
             </div>
@@ -1242,6 +1799,14 @@ export function ContentGenerator({
               <div key={turn.id} className="space-y-4">
                 <div className="flex justify-end">
                   <div className="max-w-[88%] rounded-lg bg-primary px-4 py-3 text-primary-foreground shadow-sm">
+                    <div className="mb-2 flex flex-wrap items-center justify-end gap-2 text-xs text-primary-foreground/75">
+                      <span>
+                        {turn.turnIndex === 1
+                          ? "初始需求"
+                          : `继续修改 ${turn.turnIndex - 1}`}
+                      </span>
+                      <span>{formatDateTime(new Date(turn.createdAt))}</span>
+                    </div>
                     <p className="whitespace-pre-line text-sm leading-7">
                       {turn.prompt}
                     </p>
@@ -1325,6 +1890,34 @@ export function ContentGenerator({
               void uploadFiles(files);
             }}
           />
+          {task ? (
+            <div className="mb-3 flex flex-wrap items-center gap-2 rounded-md bg-muted/35 px-3 py-2">
+              <span className="text-xs font-medium text-muted-foreground">
+                继续修改
+              </span>
+              {quickModificationActions.map((action) => (
+                <Button
+                  key={action.label}
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  disabled={isGenerating || !latestDoneTurn}
+                  onClick={() => void handleQuickModification(action)}
+                >
+                  {action.label}
+                </Button>
+              ))}
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => openMemoryPreferenceDialog()}
+              >
+                <Save className="size-4" />
+                保存为品牌记忆
+              </Button>
+            </div>
+          ) : null}
           <Textarea
             ref={composerRef}
             className="min-h-28 resize-none border-0 px-0 py-0 text-base leading-7 shadow-none focus-visible:ring-0"
@@ -1639,6 +2232,88 @@ export function ContentGenerator({
           )}
         </CardContent>
       </Card>
+
+      <Dialog
+        open={Boolean(selectedMemory)}
+        onOpenChange={() => setSelectedMemory(null)}
+      >
+        <DialogContent className="sm:max-w-2xl">
+          {selectedMemory ? (
+            <>
+              <DialogHeader>
+                <DialogTitle>{selectedMemory.title}</DialogTitle>
+                <DialogDescription>
+                  {memoryTypeLabels[selectedMemory.type]}
+                  {" · "}
+                  重要度 {selectedMemory.importance}
+                  {selectedMemory.source ? ` · ${selectedMemory.source}` : ""}
+                </DialogDescription>
+              </DialogHeader>
+              <div className="space-y-4">
+                <div className="rounded-md border bg-muted/25 p-4">
+                  <p className="whitespace-pre-line text-sm leading-7">
+                    {selectedMemory.content}
+                  </p>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  最近更新：{formatDateTime(new Date(selectedMemory.updatedAt))}
+                </p>
+              </div>
+            </>
+          ) : null}
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={memoryDialogOpen} onOpenChange={setMemoryDialogOpen}>
+        <DialogContent className="sm:max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>保存为品牌记忆</DialogTitle>
+            <DialogDescription>
+              把本次修改偏好保存为长期上下文，后续生成内容时会优先参考。
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <label className="space-y-2 text-sm font-medium">
+              标题
+              <Input
+                value={memoryTitle}
+                onChange={(event) => setMemoryTitle(event.target.value)}
+                placeholder="例如：内容修改偏好"
+              />
+            </label>
+            <label className="space-y-2 text-sm font-medium">
+              偏好内容
+              <Textarea
+                className="min-h-36"
+                value={memoryDraft}
+                onChange={(event) => setMemoryDraft(event.target.value)}
+                placeholder="例如：后续小红书文案要更像真实用户分享，少用营销话术。"
+              />
+            </label>
+          </div>
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setMemoryDialogOpen(false)}
+            >
+              取消
+            </Button>
+            <Button
+              type="button"
+              disabled={isSavingMemory}
+              onClick={handleSaveMemoryPreference}
+            >
+              {isSavingMemory ? (
+                <Loader2 className="size-4 animate-spin" />
+              ) : (
+                <Save className="size-4" />
+              )}
+              保存记忆
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={assetDialogOpen} onOpenChange={setAssetDialogOpen}>
         <DialogContent className="max-h-[86vh] overflow-y-auto sm:max-w-2xl">

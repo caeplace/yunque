@@ -60,9 +60,9 @@ export function WorkspaceCreateForm() {
         throw new Error(getApiErrorMessage(payload, "创建品牌空间失败。"));
       }
 
-      const message = "品牌空间已创建，接下来填写品牌档案。";
+      const message = "品牌空间已创建，接下来完成轻量品牌初始化。";
       notify("success", "创建成功", message);
-      router.push("/brand-profile");
+      router.push("/workspaces/onboarding");
       router.refresh();
     } catch (error) {
       const message = error instanceof Error ? error.message : "创建品牌空间失败。";
@@ -77,7 +77,7 @@ export function WorkspaceCreateForm() {
       <CardHeader>
         <CardTitle>创建品牌空间</CardTitle>
         <CardDescription>
-          Workspace 是品牌数据的隔离边界。素材、内容、日历和品牌记忆都会归属于当前品牌空间。
+          Workspace 是品牌数据的隔离边界。创建后先用轻量问卷初始化品牌上下文。
         </CardDescription>
       </CardHeader>
       <CardContent>
@@ -130,7 +130,7 @@ export function WorkspaceCreateForm() {
             ) : (
               <Plus className="size-4" />
             )}
-            {isSubmitting ? "正在创建..." : "创建并填写品牌档案"}
+            {isSubmitting ? "正在创建..." : "创建并初始化品牌"}
           </Button>
         </form>
       </CardContent>

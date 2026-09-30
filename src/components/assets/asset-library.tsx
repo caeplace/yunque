@@ -6,12 +6,14 @@ import { useRouter } from "next/navigation";
 import type { AssetStatus, AssetType, ContentStatus, Platform } from "@prisma/client";
 import {
   Archive,
+  ArrowRight,
   File,
   FileImage,
   FileText,
   Film,
   LinkIcon,
   Loader2,
+  PackageOpen,
   Pencil,
   Search,
   Sparkles,
@@ -174,6 +176,14 @@ function isPublishedUsage(content: AssetUsageContent) {
   );
 }
 
+function isUsedAsset(asset: AssetLibraryAsset) {
+  return (
+    asset.status === "USED" ||
+    asset.usageStatus === "USED" ||
+    asset.generatedContents.length > 0
+  );
+}
+
 function getUsageHint(asset: AssetLibraryAsset) {
   const published = asset.generatedContents.some(isPublishedUsage);
 
@@ -251,6 +261,10 @@ function assetMatchesQuery(asset: AssetLibraryAsset, query: string) {
 
 function buildContentStudioHref(assetId: string) {
   return `/content-studio?assetIds=${encodeURIComponent(assetId)}`;
+}
+
+function buildBatchContentStudioHref(batchId: string) {
+  return `/content-studio?batchId=${encodeURIComponent(batchId)}`;
 }
 
 function ArchiveAssetButton({
@@ -562,6 +576,140 @@ function AssetTagsDialog({
   );
 }
 
+function BatchDetailDialog({
+  batch,
+  assets,
+  onOpenChange,
+  onViewAsset,
+}: {
+  batch: AssetLibraryBatch | null;
+  assets: AssetLibraryAsset[];
+  onOpenChange: (open: boolean) => void;
+  onViewAsset: (asset: AssetLibraryAsset) => void;
+}) {
+  const activeAssets = assets.filter((asset) => asset.status !== "ARCHIVED");
+  const usedCount = assets.filter(isUsedAsset).length;
+  const unusedCount = activeAssets.filter((asset) => !isUsedAsset(asset)).length;
+
+  return (
+    <Dialog open={Boolean(batch)} onOpenChange={onOpenChange}>
+      <DialogContent className="max-h-[88vh] overflow-y-auto sm:max-w-4xl">
+        {batch ? (
+          <>
+            <DialogHeader>
+              <DialogTitle className="break-words pr-8">{batch.name}</DialogTitle>
+              <DialogDescription>
+                批次详情会帮你判断这一批素材已经用到哪里、还剩哪些可以继续生成内容。
+              </DialogDescription>
+            </DialogHeader>
+
+            <div className="grid gap-3 sm:grid-cols-4">
+              <div className="rounded-md border bg-muted/25 p-3">
+                <p className="text-xs text-muted-foreground">素材数量</p>
+                <p className="mt-1 text-2xl font-semibold">{batch.assetCount}</p>
+              </div>
+              <div className="rounded-md border bg-muted/25 p-3">
+                <p className="text-xs text-muted-foreground">已使用</p>
+                <p className="mt-1 text-2xl font-semibold">{usedCount}</p>
+              </div>
+              <div className="rounded-md border bg-muted/25 p-3">
+                <p className="text-xs text-muted-foreground">未使用</p>
+                <p className="mt-1 text-2xl font-semibold">{unusedCount}</p>
+              </div>
+              <div className="rounded-md border bg-muted/25 p-3">
+                <p className="text-xs text-muted-foreground">最近更新</p>
+                <p className="mt-2 text-sm font-medium">
+                  {formatShortDate(batch.updatedAt)}
+                </p>
+              </div>
+            </div>
+
+            <div className="flex flex-col gap-3 rounded-md border bg-muted/20 p-4 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <p className="text-sm font-medium">用这一批素材开始创作</p>
+                <p className="mt-1 text-sm text-muted-foreground">
+                  会自动选择本批次里未归档的素材，进入内容生成页继续输入需求。
+                </p>
+              </div>
+              {activeAssets.length > 0 ? (
+                <Button asChild>
+                  <Link href={buildBatchContentStudioHref(batch.id)}>
+                    <Sparkles className="size-4" />
+                    用这一批生成内容
+                    <ArrowRight className="size-4" />
+                  </Link>
+                </Button>
+              ) : (
+                <Button disabled>
+                  <Sparkles className="size-4" />
+                  暂无可用素材
+                </Button>
+              )}
+            </div>
+
+            <div className="space-y-3">
+              <div className="flex items-center justify-between gap-3">
+                <h3 className="text-sm font-medium">本批素材</h3>
+                <Badge variant="secondary">{assets.length} 个素材</Badge>
+              </div>
+
+              {assets.length > 0 ? (
+                <div className="divide-y rounded-md border">
+                  {assets.map((asset) => {
+                    const usage = getUsageHint(asset);
+
+                    return (
+                      <div
+                        key={asset.id}
+                        className="flex flex-col gap-3 p-3 sm:flex-row sm:items-center"
+                      >
+                        <div className="flex min-w-0 flex-1 items-center gap-3">
+                          <AssetPreview asset={asset} />
+                          <div className="min-w-0">
+                            <p className="truncate text-sm font-medium">
+                              {getAssetName(asset)}
+                            </p>
+                            <div className="mt-2 flex flex-wrap gap-1.5">
+                              <Badge variant="outline">
+                                {assetTypeLabels[asset.type]}
+                              </Badge>
+                              <Badge variant={getStatusVariant(asset.status)}>
+                                {assetStatusLabels[asset.status]}
+                              </Badge>
+                              <Badge variant={usage.variant}>{usage.label}</Badge>
+                              {asset.tags.slice(0, 3).map((tag) => (
+                                <Badge key={tag} variant="outline">
+                                  {tag}
+                                </Badge>
+                              ))}
+                            </div>
+                          </div>
+                        </div>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          onClick={() => onViewAsset(asset)}
+                        >
+                          查看素材
+                        </Button>
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : (
+                <div className="rounded-md border border-dashed p-8 text-center text-sm text-muted-foreground">
+                  这个批次下还没有素材。
+                </div>
+              )}
+            </div>
+          </>
+        ) : null}
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 export function AssetLibrary({
   workspaceName,
   assets,
@@ -576,8 +724,34 @@ export function AssetLibrary({
     useState<AssetStatusFilter>(initialStatus);
   const [typeFilter, setTypeFilter] = useState<AssetTypeFilter>(initialType);
   const [batchId, setBatchId] = useState(initialBatchId || "ALL");
+  const [activeBatchId, setActiveBatchId] = useState<string | null>(null);
   const [detailAsset, setDetailAsset] = useState<AssetLibraryAsset | null>(null);
   const [tagsAsset, setTagsAsset] = useState<AssetLibraryAsset | null>(null);
+
+  const batchSummaries = useMemo(() => {
+    return batches.map((batch) => {
+      const batchAssets = assets.filter((asset) => asset.batch.id === batch.id);
+      const activeAssets = batchAssets.filter(
+        (asset) => asset.status !== "ARCHIVED",
+      );
+      const usedAssetCount = batchAssets.filter(isUsedAsset).length;
+      const unusedAssetCount = activeAssets.filter(
+        (asset) => !isUsedAsset(asset),
+      ).length;
+
+      return {
+        ...batch,
+        assets: batchAssets,
+        usedAssetCount,
+        unusedAssetCount,
+        archivedAssetCount: batchAssets.length - activeAssets.length,
+        activeAssetCount: activeAssets.length,
+      };
+    });
+  }, [assets, batches]);
+
+  const activeBatch =
+    batchSummaries.find((batch) => batch.id === activeBatchId) ?? null;
 
   const filteredAssets = useMemo(() => {
     return assets.filter((asset) => {
@@ -663,6 +837,93 @@ export function AssetLibrary({
           <span>显示 {filteredAssets.length} 个</span>
         </div>
       </section>
+
+      {batchSummaries.length > 0 ? (
+        <Card>
+          <CardHeader className="pb-3">
+            <CardTitle className="flex items-center gap-2">
+              <PackageOpen className="size-4 text-primary" />
+              素材批次
+            </CardTitle>
+            <CardDescription>
+              按批次查看素材使用进度，判断这一批还能生成哪些内容。
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+              {batchSummaries.map((batch) => (
+                <div
+                  key={batch.id}
+                  className="rounded-md border bg-background p-4 transition-colors hover:border-primary/50 hover:bg-muted/25"
+                >
+                  <button
+                    type="button"
+                    className="block w-full text-left"
+                    onClick={() => setActiveBatchId(batch.id)}
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <p className="truncate text-sm font-semibold">
+                          {batch.name}
+                        </p>
+                        <p className="mt-1 text-xs text-muted-foreground">
+                          更新于 {formatShortDate(batch.updatedAt)}
+                        </p>
+                      </div>
+                      <Badge variant="secondary">{batch.assetCount} 个素材</Badge>
+                    </div>
+
+                    <div className="mt-4 grid grid-cols-3 gap-2 text-center">
+                      <div className="rounded-md border bg-muted/20 px-2 py-2">
+                        <p className="text-xs text-muted-foreground">素材</p>
+                        <p className="mt-1 text-lg font-semibold">
+                          {batch.assetCount}
+                        </p>
+                      </div>
+                      <div className="rounded-md border bg-muted/20 px-2 py-2">
+                        <p className="text-xs text-muted-foreground">已使用</p>
+                        <p className="mt-1 text-lg font-semibold">
+                          {batch.usedAssetCount}
+                        </p>
+                      </div>
+                      <div className="rounded-md border bg-muted/20 px-2 py-2">
+                        <p className="text-xs text-muted-foreground">未使用</p>
+                        <p className="mt-1 text-lg font-semibold">
+                          {batch.unusedAssetCount}
+                        </p>
+                      </div>
+                    </div>
+                  </button>
+
+                  <div className="mt-4 flex flex-wrap gap-2">
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      onClick={() => setActiveBatchId(batch.id)}
+                    >
+                      查看批次详情
+                    </Button>
+                    {batch.activeAssetCount > 0 ? (
+                      <Button asChild size="sm">
+                        <Link href={buildBatchContentStudioHref(batch.id)}>
+                          <Sparkles className="size-4" />
+                          用这一批生成内容
+                        </Link>
+                      </Button>
+                    ) : (
+                      <Button size="sm" disabled>
+                        <Sparkles className="size-4" />
+                        暂无可用素材
+                      </Button>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
+      ) : null}
 
       <Card>
         <CardHeader className="pb-3">
@@ -804,6 +1065,17 @@ export function AssetLibrary({
         asset={detailAsset}
         onOpenChange={(open) => {
           if (!open) setDetailAsset(null);
+        }}
+      />
+      <BatchDetailDialog
+        batch={activeBatch}
+        assets={activeBatch?.assets ?? []}
+        onOpenChange={(open) => {
+          if (!open) setActiveBatchId(null);
+        }}
+        onViewAsset={(asset) => {
+          setActiveBatchId(null);
+          setDetailAsset(asset);
         }}
       />
       <AssetTagsDialog

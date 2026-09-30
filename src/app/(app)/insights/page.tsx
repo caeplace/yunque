@@ -1,22 +1,16 @@
+import type { ReactNode } from "react";
 import {
-  AlertTriangle,
   ArrowRight,
   CalendarDays,
   CheckCircle2,
   FileText,
   Lightbulb,
-  MessageSquareReply,
   PackageOpen,
   Sparkles,
   Upload,
   type LucideIcon,
 } from "lucide-react";
 import Link from "next/link";
-import {
-  createInsightsFallback,
-  generateInsights,
-  isAiConfigured,
-} from "@/services/ai";
 import { EmptyState } from "@/components/layout/empty-state";
 import { PageHeader } from "@/components/layout/page-header";
 import { Badge } from "@/components/ui/badge";
@@ -28,75 +22,167 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import {
-  contentStatusLabels,
-  contentTypeLabels,
-  platformLabels,
-} from "@/lib/labels";
-import { logError } from "@/lib/logger";
+import { contentTypeLabels, platformLabels } from "@/lib/labels";
 import { getInsightsData } from "@/services/db/current-workspace";
 
 export const dynamic = "force-dynamic";
 
-function SummaryPill({
-  label,
-  value,
-  tone = "default",
+type InsightsData = NonNullable<
+  Awaited<ReturnType<typeof getInsightsData>>["data"]
+>;
+
+type NextStep = {
+  title: string;
+  description: string;
+  evidence: string;
+  href: string;
+  actionLabel: string;
+  icon: LucideIcon;
+};
+
+function SetupActions() {
+  return (
+    <div className="flex flex-col gap-2 sm:flex-row">
+      <Button asChild>
+        <Link href="/assets">
+          <Upload className="size-4" />
+          上传素材
+        </Link>
+      </Button>
+      <Button asChild variant="outline">
+        <Link href="/content-studio">
+          <Sparkles className="size-4" />
+          生成内容
+        </Link>
+      </Button>
+      <Button asChild variant="outline">
+        <Link href="/calendar">
+          <CalendarDays className="size-4" />
+          加入日历
+        </Link>
+      </Button>
+    </div>
+  );
+}
+
+function compactList(items: string[]) {
+  if (items.length === 0) return "";
+  if (items.length === 1) return items[0];
+  return `${items.slice(0, 2).join("、")}${items.length > 2 ? "等" : ""}`;
+}
+
+function buildNextSteps(data: InsightsData): NextStep[] {
+  const topMemory = data.insightsInput.brandMemories[0];
+  const memoryHint = topMemory
+    ? `参考品牌记忆「${topMemory.title}」`
+    : "暂无品牌记忆，建议先沉淀 1 条偏好";
+  const unusedNames = compactList(
+    data.unusedAssetSamples.map((asset) => asset.fileName ?? asset.title),
+  );
+  const unplannedNames = compactList(
+    data.unplannedContentSamples.map((content) => content.title),
+  );
+
+  return [
+    {
+      title:
+        data.stats.unusedAssetCount > 0
+          ? `先用 ${Math.min(data.stats.unusedAssetCount, 3)} 个未使用素材生成内容`
+          : "补充下一批可用素材",
+      description:
+        data.stats.unusedAssetCount > 0
+          ? `从 ${unusedNames || "最近上传的素材"} 开始，生成 1-3 条可发布内容。`
+          : "当前没有待消化素材，先上传新品图、卖点文档或场景素材。",
+      evidence: `未使用素材 ${data.stats.unusedAssetCount} 个 · ${memoryHint}`,
+      href: data.stats.unusedAssetCount > 0 ? "/content-studio" : "/assets",
+      actionLabel:
+        data.stats.unusedAssetCount > 0 ? "去生成内容" : "去上传素材",
+      icon: PackageOpen,
+    },
+    {
+      title:
+        data.stats.unplannedContentCount > 0
+          ? `给 ${data.stats.unplannedContentCount} 条未排期内容安排发布时间`
+          : "生成后立刻加入内容日历",
+      description:
+        data.stats.unplannedContentCount > 0
+          ? `优先处理 ${unplannedNames || "最近保存的草稿"}，避免内容停在草稿箱。`
+          : "当前没有未排期内容，下一次生成后建议直接保存并加入日历。",
+      evidence: `未排期内容 ${data.stats.unplannedContentCount} 条 · 内容日历 ${data.stats.calendarItemCount} 条`,
+      href: "/calendar",
+      actionLabel: "查看日历",
+      icon: CalendarDays,
+    },
+    {
+      title:
+        data.stats.monthlyPublishedCount > 0
+          ? "复盘已发布内容，沉淀成品牌记忆"
+          : "先发布一条内容，建立可复盘样本",
+      description:
+        data.stats.monthlyPublishedCount > 0
+          ? `本月已有 ${data.stats.monthlyPublishedCount} 条发布记录，把有效标题、语气或禁用表达写进品牌记忆。`
+          : "本月还没有已发布内容。先完成一条发布，再用品牌记忆统一后续表达。",
+      evidence: `已发布内容 ${data.stats.monthlyPublishedCount} 条 · 品牌记忆 ${data.stats.activeMemoryCount} 条`,
+      href:
+        data.stats.monthlyPublishedCount > 0 ? "/brand-profile" : "/calendar",
+      actionLabel:
+        data.stats.monthlyPublishedCount > 0 ? "维护品牌记忆" : "去发布内容",
+      icon: Lightbulb,
+    },
+  ];
+}
+
+function NextStepCard({
+  step,
+  index,
 }: {
-  label: string;
-  value: string | number;
-  tone?: "default" | "warning";
+  step: NextStep;
+  index: number;
 }) {
-  return (
-    <div
-      className={`rounded-md border px-3 py-2 ${
-        tone === "warning" ? "border-destructive/25 bg-destructive/5" : ""
-      }`}
-    >
-      <p className="text-xs text-muted-foreground">{label}</p>
-      <p className="mt-1 text-lg font-semibold">{value}</p>
-    </div>
-  );
-}
-
-function AdviceList({ items }: { items: string[] }) {
-  if (items.length === 0) {
-    return (
-      <div className="rounded-md border border-dashed p-5 text-sm text-muted-foreground">
-        暂无可执行建议。继续上传素材、生成内容并加入日历后，这里会变得更有用。
-      </div>
-    );
-  }
+  const Icon = step.icon;
 
   return (
-    <div className="space-y-3">
-      {items.map((item, index) => (
-        <div key={`${item}-${index}`} className="flex gap-3 rounded-md border p-4">
-          <span className="flex size-7 shrink-0 items-center justify-center rounded-full bg-primary/10 text-sm font-semibold text-primary">
-            {index + 1}
-          </span>
-          <p className="text-sm leading-6 text-muted-foreground">{item}</p>
+    <Card className="h-full">
+      <CardHeader className="pb-3">
+        <div className="flex items-start justify-between gap-3">
+          <div className="flex items-center gap-2">
+            <span className="flex size-8 shrink-0 items-center justify-center rounded-md bg-primary text-sm font-semibold text-primary-foreground">
+              {index + 1}
+            </span>
+            <Icon className="size-5 text-primary" />
+          </div>
+          <Badge variant="outline">下一步</Badge>
         </div>
-      ))}
-    </div>
+        <CardTitle className="text-lg leading-7">{step.title}</CardTitle>
+        <CardDescription className="leading-6">
+          {step.description}
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <p className="rounded-md bg-muted/40 px-3 py-2 text-xs leading-5 text-muted-foreground">
+          依据：{step.evidence}
+        </p>
+        <Button asChild size="sm">
+          <Link href={step.href}>
+            {step.actionLabel}
+            <ArrowRight className="size-4" />
+          </Link>
+        </Button>
+      </CardContent>
+    </Card>
   );
 }
 
-function ReminderBlock({
+function CompactSection({
   title,
   description,
   icon: Icon,
-  action,
   children,
 }: {
   title: string;
   description: string;
   icon: LucideIcon;
-  action?: {
-    href: string;
-    label: string;
-  };
-  children: React.ReactNode;
+  children: ReactNode;
 }) {
   return (
     <Card>
@@ -107,40 +193,18 @@ function ReminderBlock({
         </CardTitle>
         <CardDescription>{description}</CardDescription>
       </CardHeader>
-      <CardContent className="space-y-3">
-        {children}
-        {action ? (
-          <Button asChild size="sm" variant="outline">
-            <Link href={action.href}>
-              {action.label}
-              <ArrowRight className="size-4" />
-            </Link>
-          </Button>
-        ) : null}
-      </CardContent>
+      <CardContent>{children}</CardContent>
     </Card>
   );
 }
 
-function EmptyReminder({ children }: { children: React.ReactNode }) {
+function EmptyLine({ children }: { children: ReactNode }) {
   return (
     <div className="flex items-center gap-2 rounded-md border border-dashed p-4 text-sm text-muted-foreground">
       <CheckCircle2 className="size-4 text-primary" />
       {children}
     </div>
   );
-}
-
-function getActionableAdvice(insights: ReturnType<typeof createInsightsFallback>) {
-  return [
-    ...insights.assetSuggestions,
-    ...insights.contentSuggestions,
-    ...insights.platformSuggestions,
-    ...insights.riskSuggestions,
-    ...insights.nextMonthPlan,
-  ]
-    .filter(Boolean)
-    .slice(0, 7);
 }
 
 export default async function InsightsPage() {
@@ -153,36 +217,14 @@ export default async function InsightsPage() {
         <PageHeader
           eyebrow="Insights"
           title="运营建议"
-          description="基于当前系统内数据生成简单、可执行的运营建议。"
+          description="这里不会做数据大屏，只告诉你下一步该做什么。"
         />
         <EmptyState
           title="暂无可用数据"
           description={
-            result.error ??
-            "请先上传素材，再生成内容，并把内容加入日历后再查看运营建议。"
+            result.error ?? "请按顺序完成：上传素材、生成内容、加入日历。"
           }
-          action={
-            <div className="flex flex-col gap-2 sm:flex-row">
-              <Button asChild>
-                <Link href="/assets">
-                  <Upload className="size-4" />
-                  上传素材
-                </Link>
-              </Button>
-              <Button asChild variant="outline">
-                <Link href="/content-studio">
-                  <Sparkles className="size-4" />
-                  生成内容
-                </Link>
-              </Button>
-              <Button asChild variant="outline">
-                <Link href="/calendar">
-                  <CalendarDays className="size-4" />
-                  加入日历
-                </Link>
-              </Button>
-            </div>
-          }
+          action={<SetupActions />}
         />
       </div>
     );
@@ -199,245 +241,129 @@ export default async function InsightsPage() {
         <PageHeader
           eyebrow="Insights"
           title={`${data.workspace.name} 运营建议`}
-          description="这里不会展示虚构数据；先沉淀素材、内容和日历计划后再生成建议。"
+          description="先建立素材、内容和日历，之后这里会给出下一步动作。"
         />
         <EmptyState
           title="还没有可建议的运营数据"
-          description="建议按顺序完成：先上传素材，再生成内容，最后把内容加入日历。"
-          action={
-            <div className="flex flex-col gap-2 sm:flex-row">
-              <Button asChild>
-                <Link href="/assets">
-                  <Upload className="size-4" />
-                  上传素材
-                </Link>
-              </Button>
-              <Button asChild variant="outline">
-                <Link href="/content-studio">
-                  <Sparkles className="size-4" />
-                  生成内容
-                </Link>
-              </Button>
-              <Button asChild variant="outline">
-                <Link href="/calendar">
-                  <CalendarDays className="size-4" />
-                  加入日历
-                </Link>
-              </Button>
-            </div>
-          }
+          description="建议按顺序完成：1. 上传素材  2. 生成内容  3. 加入日历。"
+          action={<SetupActions />}
         />
       </div>
     );
   }
 
-  const aiResult = isAiConfigured()
-    ? await generateInsights(data.insightsInput).catch((error) => {
-        logError("insights/ai", error);
-        return null;
-      })
-    : null;
-  const insights = aiResult?.data ?? createInsightsFallback(data.insightsInput);
-  const actionableAdvice = getActionableAdvice(insights);
-  const hasReminders =
-    data.stats.unusedAssetCount > 0 ||
-    data.stats.unplannedContentCount > 0 ||
-    data.stats.highRiskContentCount > 0;
+  const nextSteps = buildNextSteps(data);
+  const topMemories = data.insightsInput.brandMemories.slice(0, 3);
 
   return (
     <div className="space-y-6">
       <PageHeader
         eyebrow="Insights"
-        title={`${data.workspace.name} 运营建议`}
-        description={`${data.monthLabel}，只基于品牌档案、素材、生成内容、内容日历和品牌记忆。`}
-        action={
-          <Button asChild variant="outline">
-            <Link href="/reply-assistant">
-              <MessageSquareReply className="size-4" />
-              生成评论/私信回复
-            </Link>
-          </Button>
-        }
+        title={`${data.workspace.name} 下一步建议`}
+        description="基于未使用素材、未排期内容、已发布内容和品牌记忆生成。"
       />
 
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <FileText className="size-4 text-primary" />
-            本月简要总结
-          </CardTitle>
-          <CardDescription>
-            不包含曝光、点击、转化、粉丝增长等外部平台数据。
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <p className="text-sm leading-7 text-muted-foreground">
-            {insights.monthlySummary}
-          </p>
-          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
-            <SummaryPill
-              label="生成内容"
-              value={data.stats.monthlyGeneratedContentCount}
-            />
-            <SummaryPill
-              label="已加入日历"
-              value={data.stats.monthlyPlannedPublishCount}
-            />
-            <SummaryPill
-              label="已发布"
-              value={data.stats.monthlyPublishedCount}
-            />
-            <SummaryPill
-              label="未使用素材"
-              value={data.stats.unusedAssetCount}
-              tone={data.stats.unusedAssetCount > 0 ? "warning" : "default"}
-            />
-            <SummaryPill
-              label="高风险内容"
-              value={data.stats.highRiskContentCount}
-              tone={data.stats.highRiskContentCount > 0 ? "warning" : "default"}
-            />
+      <section className="space-y-3">
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
+          <div>
+            <h2 className="text-xl font-semibold">先做这 3 件事</h2>
+            <p className="mt-1 text-sm text-muted-foreground">
+              不展示复杂报表，只保留今天能推进的动作。
+            </p>
           </div>
           <div className="flex flex-wrap gap-2">
-            <Badge variant="outline">来源：品牌档案</Badge>
-            <Badge variant="outline">素材 {data.stats.assetCount}</Badge>
-            <Badge variant="outline">内容 {data.stats.contentCount}</Badge>
-            <Badge variant="outline">日历 {data.stats.calendarItemCount}</Badge>
-            <Badge variant="outline">品牌记忆 {data.stats.activeMemoryCount}</Badge>
+            <Badge variant="outline">
+              未使用素材 {data.stats.unusedAssetCount}
+            </Badge>
+            <Badge variant="outline">
+              未排期内容 {data.stats.unplannedContentCount}
+            </Badge>
+            <Badge variant="outline">
+              已发布内容 {data.stats.monthlyPublishedCount}
+            </Badge>
+            <Badge variant="outline">
+              品牌记忆 {data.stats.activeMemoryCount}
+            </Badge>
           </div>
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <Lightbulb className="size-4 text-primary" />
-            AI 运营建议
-          </CardTitle>
-          <CardDescription>
-            建议来自当前系统数据，优先给出下一步可以直接执行的动作。
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <AdviceList items={actionableAdvice} />
-        </CardContent>
-      </Card>
-
-      <section className="space-y-4">
-        <div>
-          <h2 className="text-lg font-semibold">待处理提醒</h2>
-          <p className="mt-1 text-sm text-muted-foreground">
-            只显示系统里真实存在、需要运营人员处理的项目。
-          </p>
         </div>
-
-        {!hasReminders ? (
-          <Card>
-            <CardContent className="flex items-center gap-2 p-6 text-sm text-muted-foreground">
-              <CheckCircle2 className="size-4 text-primary" />
-              当前没有明显待处理项。可以继续上传新素材或生成下一批内容。
-            </CardContent>
-          </Card>
-        ) : null}
-
-        <div className="grid gap-4 xl:grid-cols-3">
-          <ReminderBlock
-            title="未使用素材"
-            description={`当前还有 ${data.stats.unusedAssetCount} 个素材未被内容使用。`}
-            icon={PackageOpen}
-            action={
-              data.stats.unusedAssetCount > 0
-                ? { href: "/assets", label: "查看素材" }
-                : undefined
-            }
-          >
-            {data.unusedAssetSamples.length > 0 ? (
-              <div className="space-y-2">
-                {data.unusedAssetSamples.slice(0, 3).map((asset) => (
-                  <div key={asset.id} className="rounded-md border p-3">
-                    <p className="truncate text-sm font-medium">
-                      {asset.fileName ?? asset.title}
-                    </p>
-                    <p className="mt-1 text-xs text-muted-foreground">
-                      {asset.tags.slice(0, 3).join("，") || "暂无标签"}
-                    </p>
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <EmptyReminder>暂无未使用素材。</EmptyReminder>
-            )}
-          </ReminderBlock>
-
-          <ReminderBlock
-            title="未加入日历的内容"
-            description={`当前还有 ${data.stats.unplannedContentCount} 条内容没有发布计划。`}
-            icon={CalendarDays}
-            action={
-              data.stats.unplannedContentCount > 0
-                ? { href: "/calendar", label: "去排期" }
-                : undefined
-            }
-          >
-            {data.unplannedContentSamples.length > 0 ? (
-              <div className="space-y-2">
-                {data.unplannedContentSamples.slice(0, 3).map((content) => (
-                  <div key={content.id} className="rounded-md border p-3">
-                    <div className="flex items-start justify-between gap-3">
-                      <div className="min-w-0">
-                        <p className="truncate text-sm font-medium">
-                          {content.title}
-                        </p>
-                        <p className="mt-1 text-xs text-muted-foreground">
-                          {contentTypeLabels[content.type]} ·{" "}
-                          {content.platforms
-                            .map((platform) => platformLabels[platform])
-                            .join("，") || "未设置平台"}
-                        </p>
-                      </div>
-                      <Badge variant="outline">
-                        {contentStatusLabels[content.status]}
-                      </Badge>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <EmptyReminder>已保存内容基本都有日历计划。</EmptyReminder>
-            )}
-          </ReminderBlock>
-
-          <ReminderBlock
-            title="高风险内容"
-            description={`本月有 ${data.stats.highRiskContentCount} 条内容需要复核。`}
-            icon={AlertTriangle}
-          >
-            {data.highRiskContents.length > 0 ? (
-              <div className="space-y-2">
-                {data.highRiskContents.slice(0, 3).map((content) => (
-                  <div key={content.id} className="rounded-md border p-3">
-                    <div className="flex items-start justify-between gap-3">
-                      <div className="min-w-0">
-                        <p className="truncate text-sm font-medium">
-                          {content.title}
-                        </p>
-                        <p className="mt-1 text-xs text-muted-foreground">
-                          {contentTypeLabels[content.type]} ·{" "}
-                          {content.platforms
-                            .map((platform) => platformLabels[platform])
-                            .join("，") || "未设置平台"}
-                        </p>
-                      </div>
-                      <Badge variant="accent">高风险</Badge>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <EmptyReminder>本月暂无 high 风险内容。</EmptyReminder>
-            )}
-          </ReminderBlock>
+        <div className="grid gap-4 lg:grid-cols-3">
+          {nextSteps.map((step, index) => (
+            <NextStepCard key={step.title} step={step} index={index} />
+          ))}
         </div>
+      </section>
+
+      <section className="grid gap-4 xl:grid-cols-3">
+        <CompactSection
+          title="可用素材"
+          description="只列最近几个未使用素材，方便直接拿去生成。"
+          icon={PackageOpen}
+        >
+          {data.unusedAssetSamples.length > 0 ? (
+            <div className="space-y-2">
+              {data.unusedAssetSamples.slice(0, 3).map((asset) => (
+                <div key={asset.id} className="rounded-md border p-3">
+                  <p className="truncate text-sm font-medium">
+                    {asset.fileName ?? asset.title}
+                  </p>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    {asset.tags.slice(0, 3).join("，") || "暂无标签"}
+                  </p>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <EmptyLine>当前没有未使用素材。</EmptyLine>
+          )}
+        </CompactSection>
+
+        <CompactSection
+          title="待排期内容"
+          description="保存过但还没加入日历的内容。"
+          icon={FileText}
+        >
+          {data.unplannedContentSamples.length > 0 ? (
+            <div className="space-y-2">
+              {data.unplannedContentSamples.slice(0, 3).map((content) => (
+                <div key={content.id} className="rounded-md border p-3">
+                  <p className="truncate text-sm font-medium">{content.title}</p>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    {contentTypeLabels[content.type]} ·{" "}
+                    {content.platforms
+                      .map((platform) => platformLabels[platform])
+                      .join("，") || "未设置平台"}
+                  </p>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <EmptyLine>当前没有未排期内容。</EmptyLine>
+          )}
+        </CompactSection>
+
+        <CompactSection
+          title="品牌记忆"
+          description="本页建议会优先参考这些长期上下文。"
+          icon={Lightbulb}
+        >
+          {topMemories.length > 0 ? (
+            <div className="space-y-2">
+              {topMemories.map((memory) => (
+                <div key={memory.title} className="rounded-md border p-3">
+                  <div className="flex items-center justify-between gap-2">
+                    <p className="truncate text-sm font-medium">{memory.title}</p>
+                    <Badge variant="outline">重要度 {memory.importance}</Badge>
+                  </div>
+                  <p className="mt-1 line-clamp-2 text-xs leading-5 text-muted-foreground">
+                    {memory.content}
+                  </p>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <EmptyLine>暂无品牌记忆，建议先补充语气和内容规则。</EmptyLine>
+          )}
+        </CompactSection>
       </section>
     </div>
   );
